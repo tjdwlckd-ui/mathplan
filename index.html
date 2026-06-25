@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>수학 학습 관리</title>
+<style>
+:root{
+--bg:#ffffff;--bg-soft:#F5F5F6;--card:#F4F4F5;--border:#E3E3E6;--text:#18181B;--muted:#71717A;--accent:#2F6FED;
+--ok:#15803D;--ok-bg:#ECFDF3;--warn:#B45309;--warn-bg:#FFFBEB;--bad:#B91C1C;--bad-bg:#FEF2F2;--none:#71717A;--none-bg:#F1F1F2;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg-soft);font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',Roboto,sans-serif;color:var(--text)}
+.wrap{max-width:430px;margin:0 auto;min-height:100vh;background:var(--bg);padding:30px 22px 60px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px 16px;display:flex;align-items:center;gap:12px;cursor:pointer;margin-bottom:10px}
+.card:hover{border-color:#C9C9CD}
+.track{height:6px;background:var(--border);border-radius:6px;overflow:hidden}
+.fill{height:100%;background:var(--accent)}
+button{width:100%;background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px;font-size:15px;cursor:pointer;margin-bottom:10px}
+button.primary{background:var(--text);color:#fff;border:none}
+button.link{width:auto;background:none;border:none;color:var(--muted);font-size:13px;padding:0;margin:0;text-decoration:underline}
+input,select{width:100%;padding:11px 12px;border:1px solid var(--border);border-radius:10px;font-size:15px;margin-bottom:10px;background:#fff}
+input[type=range]{padding:0}
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:700;padding:3px 9px;border-radius:8px}
+.qrow{display:flex;justify-content:space-between;align-items:center;padding:11px 2px;border-bottom:1px solid var(--border);cursor:pointer}
+.qrow:hover{background:var(--bg-soft)}
+.topbar{display:flex;align-items:center;gap:10px;margin-bottom:18px}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:18px}
+.tile{background:var(--card);border-radius:10px;padding:12px 4px;text-align:center}
+.grid50{display:grid;grid-template-columns:repeat(10,1fr);gap:5px;margin:12px 0}
+.cell{aspect-ratio:1;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700}
+.err{color:var(--bad);font-size:13px;margin:-4px 0 10px;display:none}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><p style="text-align:center;color:var(--muted);padding:60px 0">불러오는 중...</p></div>
+<script src="https://www.gstatic.com/firebasejs/12.3.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.3.0/firebase-database-compat.js"></script>
+<script>
+// 파이어베이스 설정 - 콘솔에서 복사한 값으로 4개 다 교체할 것
+const firebaseConfig={
+apiKey:"YOUR_API_KEY",
+authDomain:"YOUR_PROJECT.firebaseapp.com",
+databaseURL:"https://YOUR_PROJECT-default-rtdb.firebaseio.com",
+projectId:"YOUR_PROJECT"
+};
+const CONFIGURED=firebaseConfig.apiKey!=='YOUR_API_KEY';
+if(CONFIGURED)firebase.initializeApp(firebaseConfig);
+const db=CONFIGURED?firebase.database():null;
+// 학생 이름/PIN, 선생님 PIN - 여기서 수정/추가
+const STUDENTS=[{name:'김민준',pin:'1234'},{name:'이서연',pin:'5678'},{name:'박지호',pin:'1111'}];
+const TEACHER_PIN='0000';
+const SUBJECTS=['수1','수2'];
+const ORDER=['안풀어봄','완벽','애매함','틀림'];
+const META={
+완벽:{sym:'✓',fg:'var(--ok)',bg:'var(--ok-bg)'},
+애매함:{sym:'?',fg:'var(--warn)',bg:'var(--warn-bg)'},
+틀림:{sym:'✕',fg:'var(--bad)',bg:'var(--bad-bg)'},
+안풀어봄:{sym:'–',fg:'var(--none)',bg:'var(--none-bg)'}
+};
+
+let session={mode:null,student:null,subject:null,unitIndex:null,tStudent:null,tSubject:null,tUnitIndex:null};
+let cache={};
+let view='mode';
+
+function unitKey(student,subject,i){return student+'|'+subject+'|'+i;}
+
+async function ensureUnit(student,subject,i){
+const k=unitKey(student,subject,i);
+if(cache[k])return cache[k];
+let data=null;
+try{
+const snap=await db.ref('units/'+student+'/'+subject+'/'+i).once('value');
+data=snap.val();
+}catch(e){data=null;}
+if(!data)data={progress:0,problems:Array.from({length:50},()=>'안풀어봄')};
+cache[k]=data;
+return data;
+}
+async function saveUnit(student,subject,i){
+const k=unitKey(student,subject,i);
+try{await db.ref('units/'+student+'/'+subject+'/'+i).set(cache[k]);}catch(e){}
+}
+function countStates(problems){
+const c={완벽:0,애매함:0,틀림:0,안풀어봄:0};
+problems.forEach(p=>c[p]++);
+return c;
+}
+function subjectAvg(student,subject){
+let sum=0;for(let i=0;i<3;i++)sum+=cache[unitKey(student,subject,i)].progress;
+return Math.round(sum/3);
+}
+function topbar(title){
+return `<div class="topbar"><button class="link" onclick="goBack()">‹ 뒤로</button><h2 style="margin:0;font-size:17px">${title}</h2></div>`;
+}
+function cardNav(label,pct,onclickStr){
+return `<div class="card" onclick="${onclickStr}">
+<div style="flex:0 0 70px;font-weight:700">${label}</div>
+<div class="track" style="flex:1"><div class="fill" style="width:${pct}%"></div></div>
+<div style="font-size:13px;color:var(--muted);min-width:34px;text-align:right">${pct}%</div>
+</div>`;
+}
+
+function modeHtml(){
+if(!CONFIGURED){
+return `<div style="text-align:center;padding:40px 0">
+<h2 style="font-size:17px;margin:0 0 10px">설정이 더 필요해요</h2>
+<p style="color:var(--muted);font-size:13px;line-height:1.6">파일 위쪽 firebaseConfig 자리에<br>파이어베이스 콘솔에서 복사한 값을<br>채워 넣어야 동작해요</p>
+</div>`;
+}
+return `<div style="text-align:center;padding:50px 0 24px">
+<h1 style="font-size:20px;margin:0 0 6px">수학 학습 관리</h1>
+<p style="color:var(--muted);font-size:14px;margin:0">누구로 들어갈까?</p>
+</div>
+<button class="primary" onclick="go('studentLogin')">학생으로 입장</button>
+<button onclick="go('teacherLogin')">선생님으로 입장</button>`;
+}
+function studentLoginHtml(){
+return `<button class="link" onclick="go('mode')" style="margin-bottom:18px">← 처음으로</button>
+<h2 style="margin:0 0 16px;font-size:17px">학생 로그인</h2>
+<select id="stuName">${STUDENTS.map(s=>`<option value="${s.name}">${s.name}</option>`).join('')}</select>
+<input id="stuPin" type="password" inputmode="numeric" maxlength="4" placeholder="PIN 4자리">
+<p class="err" id="stuErr">이름 또는 PIN이 올바르지 않아요</p>
+<button class="primary" onclick="studentLogin()">로그인</button>`;
+}
+function teacherLoginHtml(){
+return `<button class="link" onclick="go('mode')" style="margin-bottom:18px">← 처음으로</button>
+<h2 style="margin:0 0 16px;font-size:17px">선생님 로그인</h2>
+<input id="teaPin" type="password" inputmode="numeric" maxlength="4" placeholder="PIN">
+<p class="err" id="teaErr">PIN이 올바르지 않아요</p>
+<button class="primary" onclick="teacherLogin()">입장</button>`;
+}
+function subjectsHtml(){
+const rows=SUBJECTS.map(subj=>cardNav(subj,subjectAvg(session.student,subj),`selectSubject('${subj}')`)).join('');
+return `<div class="topbar"><h2 style="margin:0;flex:1;font-size:17px">${session.student} 학생</h2><button class="link" onclick="goBack()">로그아웃</button></div>${rows}`;
+}
+function unitsHtml(){
+const rows=[0,1,2].map(i=>cardNav('단원'+(i+1),cache[unitKey(session.student,session.subject,i)].progress,`selectUnit(${i})`)).join('');
+return topbar(session.subject)+rows;
+}
+function tasksHtml(){
+const title=session.subject+' · 단원'+(session.unitIndex+1);
+const items=[['progress','진도'],['analysis','분석'],['review','복습']];
+const rows=items.map(([k,l])=>`<div class="card" onclick="selectTask('${k}')"><div style="flex:1;font-weight:700">${l}</div><div style="color:var(--muted)">›</div></div>`).join('');
+return topbar(title)+rows;
+}
+function progressHtml(){
+const title=session.subject+' · 단원'+(session.unitIndex+1)+' · 진도';
+const u=cache[unitKey(session.student,session.subject,session.unitIndex)];
+return topbar(title)+`<div style="text-align:center;padding:8px 0 4px">
+<div style="font-size:42px;font-weight:700" id="pctLabel">${u.progress}%</div>
+<p style="color:var(--muted);font-size:13px;margin:4px 0 18px">이 단원 진행 정도</p>
+</div>
+<input type="range" min="0" max="100" step="5" value="${u.progress}" oninput="onProgressInput(this.value)">`;
+}
+function analysisHtml(){
+const title=session.subject+' · 단원'+(session.unitIndex+1)+' · 분석';
+const u=cache[unitKey(session.student,session.subject,session.unitIndex)];
+const c=countStates(u.problems);
+const total=u.problems.length;
+const order=['완벽','애매함','틀림','안풀어봄'];
+const bar=order.map(k=>{const w=Math.round(c[k]/total*100);return w===0?'':`<div style="height:100%;width:${w}%;background:${META[k].fg}"></div>`;}).join('');
+const tiles=order.map(k=>`<div class="tile"><div style="font-size:22px;font-weight:700;color:${META[k].fg}">${c[k]}</div><div style="font-size:12px;color:var(--muted);margin-top:4px">${k}</div></div>`).join('');
+const weak=u.problems.map((p,i)=>({p,i})).filter(o=>o.p==='틀림'||o.p==='애매함');
+const weakHtml=weak.length?weak.map(o=>`<span class="badge" style="background:${META[o.p].bg};color:${META[o.p].fg}">${o.i+1}</span>`).join(' '):`<p style="color:var(--muted);font-size:13px">다시 풀어볼 문제가 아직 없어요</p>`;
+return topbar(title)+`<div style="display:flex;height:14px;border-radius:8px;overflow:hidden;background:var(--border);margin-bottom:16px">${bar}</div>
+<div class="tiles">${tiles}</div>
+<h3 style="margin:0 0 8px;font-size:15px">다시 풀어볼 문제</h3>
+<div style="display:flex;flex-wrap:wrap;gap:6px">${weakHtml}</div>`;
+}
+function reviewHtml(){
+const title=session.subject+' · 단원'+(session.unitIndex+1)+' · 복습';
+const u=cache[unitKey(session.student,session.subject,session.unitIndex)];
+const done=u.problems.filter(p=>p!=='안풀어봄').length;
+const rows=u.problems.map((p,i)=>{
+const btns=ORDER.map(st=>{
+const m=META[st];
+const on=p===st;
+return `<button type="button" onclick="setState(${i},'${st}')" style="width:30px;height:30px;padding:0;margin:0;border-radius:8px;border:1px solid ${on?m.fg:'var(--border)'};background:${on?m.bg:'transparent'};color:${on?m.fg:'var(--muted)'};font-weight:700;font-size:13px;line-height:1">${m.sym}</button>`;
+}).join('');
+return `<div class="qrow" style="cursor:default"><span>문제 ${i+1}</span><div style="display:flex;gap:4px">${btns}</div></div>`;
+}).join('');
+return topbar(title)+`<p style="font-size:13px;color:var(--muted);margin:0 0 10px">${done}/${u.problems.length}개 체크함 · 원하는 상태를 바로 눌러요 (–안풀어봄 ✓완벽 ?애매함 ✕틀림)</p><div>${rows}</div>`;
+}
+function teacherDashboardHtml(){
+const rows=STUDENTS.map(s=>{
+let totalProgress=0,cnt=0;const agg={완벽:0,애매함:0,틀림:0,안풀어봄:0};
+SUBJECTS.forEach(subj=>{[0,1,2].forEach(i=>{
+const u=cache[unitKey(s.name,subj,i)];
+totalProgress+=u.progress;cnt++;
+const c=countStates(u.problems);
+Object.keys(agg).forEach(k=>agg[k]+=c[k]);
+});});
+const avg=Math.round(totalProgress/cnt);
+return `<div class="card" onclick="selectTeacherStudent('${s.name}')">
+<div style="flex:0 0 80px;font-weight:700">${s.name}</div>
+<div class="track" style="flex:1"><div class="fill" style="width:${avg}%"></div></div>
+<div style="font-size:12px;color:var(--muted);min-width:130px;text-align:right">평균 ${avg}% · ✓${agg['완벽']} ?${agg['애매함']} ✕${agg['틀림']}</div>
+</div>`;
+}).join('');
+return `<div class="topbar"><h2 style="margin:0;flex:1;font-size:17px">전체 학생 현황</h2><button class="link" onclick="logoutTeacher()">나가기</button></div>${rows}`;
+}
+function teacherStudentHtml(){
+const name=session.tStudent;
+const blocks=SUBJECTS.map(subj=>{
+const rows=[0,1,2].map(i=>{
+const u=cache[unitKey(name,subj,i)];
+const c=countStates(u.problems);
+return `<div class="card" onclick="selectTeacherUnit('${subj}',${i})">
+<div style="flex:0 0 60px;font-weight:700">단원${i+1}</div>
+<div class="track" style="flex:1"><div class="fill" style="width:${u.progress}%"></div></div>
+<div style="font-size:12px;color:var(--muted);min-width:140px;text-align:right">진도 ${u.progress}% · ✓${c['완벽']} ?${c['애매함']} ✕${c['틀림']}</div>
+</div>`;
+}).join('');
+return `<h3 style="margin:18px 0 8px;font-size:15px">${subj}</h3>${rows}`;
+}).join('');
+return topbar(name+' 학생')+blocks;
+}
+function teacherUnitHtml(){
+const name=session.tStudent,subj=session.tSubject,i=session.tUnitIndex;
+const u=cache[unitKey(name,subj,i)];
+const cells=u.problems.map((p,idx)=>{const m=META[p];return `<div class="cell" style="background:${m.bg};color:${m.fg}">${idx+1}</div>`;}).join('');
+const legend=Object.entries(META).map(([k,m])=>`<span style="margin-right:10px;font-size:12px;color:var(--muted)"><span style="color:${m.fg};font-weight:700">${m.sym}</span> ${k}</span>`).join('');
+return topbar(name+' · '+subj+' · 단원'+(i+1))+`<p style="font-size:12px;color:var(--muted);margin:0 0 10px">진도 ${u.progress}%</p>
+<div>${legend}</div>
+<div class="grid50">${cells}</div>`;
+}
+
+function htmlFor(){
+const map={mode:modeHtml,studentLogin:studentLoginHtml,teacherLogin:teacherLoginHtml,subjects:subjectsHtml,units:unitsHtml,tasks:tasksHtml,progress:progressHtml,analysis:analysisHtml,review:reviewHtml,teacherDashboard:teacherDashboardHtml,teacherStudent:teacherStudentHtml,teacherUnit:teacherUnitHtml};
+return map[view]();
+}
+function paint(){document.getElementById('app').innerHTML=htmlFor();}
+function showLoading(){document.getElementById('app').innerHTML='<p style="text-align:center;color:var(--muted);padding:60px 0">불러오는 중...</p>';}
+
+const NEEDS_PREP=['subjects','units','tasks','progress','analysis','review','teacherDashboard','teacherStudent','teacherUnit'];
+async function prepareData(){
+if(view==='subjects'){for(const subj of SUBJECTS){for(let i=0;i<3;i++)await ensureUnit(session.student,subj,i);}}
+else if(view==='units'){for(let i=0;i<3;i++)await ensureUnit(session.student,session.subject,i);}
+else if(['tasks','progress','analysis','review'].includes(view)){await ensureUnit(session.student,session.subject,session.unitIndex);}
+else if(['teacherDashboard','teacherStudent','teacherUnit'].includes(view)){
+for(const st of STUDENTS){for(const subj of SUBJECTS){for(let i=0;i<3;i++)await ensureUnit(st.name,subj,i);}}
+}
+}
+async function go(v){
+view=v;
+if(NEEDS_PREP.includes(v)){showLoading();await prepareData();}
+paint();
+}
+function goBack(){
+const map={studentLogin:'mode',teacherLogin:'mode',units:'subjects',tasks:'units',progress:'tasks',analysis:'tasks',review:'tasks',teacherStudent:'teacherDashboard',teacherUnit:'teacherStudent'};
+if(view==='subjects'){session.student=null;go('mode');return;}
+go(map[view]||'mode');
+}
+async function studentLogin(){
+const name=document.getElementById('stuName').value;
+const pin=document.getElementById('stuPin').value;
+const found=STUDENTS.find(s=>s.name===name&&s.pin===pin);
+if(!found){document.getElementById('stuErr').style.display='block';return;}
+session.student=name;session.mode='student';
+await go('subjects');
+}
+async function teacherLogin(){
+const pin=document.getElementById('teaPin').value;
+if(pin!==TEACHER_PIN){document.getElementById('teaErr').style.display='block';return;}
+session.mode='teacher';
+await go('teacherDashboard');
+}
+function logoutTeacher(){session.mode=null;go('mode');}
+function selectSubject(s){session.subject=s;go('units');}
+function selectUnit(i){session.unitIndex=i;go('tasks');}
+function selectTask(t){go(t);}
+function selectTeacherStudent(name){session.tStudent=name;go('teacherStudent');}
+function selectTeacherUnit(subj,i){session.tSubject=subj;session.tUnitIndex=i;go('teacherUnit');}
+function onProgressInput(v){
+const k=unitKey(session.student,session.subject,session.unitIndex);
+cache[k].progress=Math.round(Number(v));
+document.getElementById('pctLabel').textContent=cache[k].progress+'%';
+saveUnit(session.student,session.subject,session.unitIndex);
+}
+function setState(i,state){
+const k=unitKey(session.student,session.subject,session.unitIndex);
+cache[k].problems[i]=state;
+paint();
+saveUnit(session.student,session.subject,session.unitIndex);
+}
+
+go('mode');
+</script>
+</body>
+</html>
